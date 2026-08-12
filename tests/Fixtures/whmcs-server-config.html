@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Lumio WHMCS Server Configuration Fixture</title>
+    <style>
+        body { font: 16px sans-serif; margin: 2rem; }
+        .form-group { display: grid; grid-template-columns: 14rem 28rem; gap: 1rem; margin: 1rem 0; }
+        .hidden { display: none; }
+        input, select, textarea { font: inherit; }
+        @media (max-width: 48rem) {
+            body { margin: 1rem; }
+            .form-group { grid-template-columns: 1fr; gap: .35rem; }
+            input, select, textarea { box-sizing: border-box; width: 100%; }
+        }
+    </style>
+</head>
+<body>
+<form id="preAddForm">
+    <div class="form-group">
+        <label for="addType">Module</label>
+        <select id="addType" data-related-id="inputServerType">
+            <option value="other">Other</option>
+            <option value="lumio" selected>Lumio</option>
+        </select>
+    </div>
+    <div class="form-group">
+        <label for="newHostname">Hostname or IP Address</label>
+        <input id="newHostname" data-related-id="inputHostname">
+    </div>
+    <div class="form-group">
+        <label for="newUsername">Username</label>
+        <input id="newUsername" data-related-id="inputUsername">
+    </div>
+    <div class="form-group">
+        <label for="newPassword">Password</label>
+        <input id="newPassword" data-related-id="inputPassword">
+    </div>
+    <div class="form-group">
+        <label for="newHash">Access Hash</label>
+        <textarea id="newHash" data-related-id="serverHash"></textarea>
+    </div>
+    <button id="newTestConn" type="button">Test Connection</button>
+</form>
+
+<form id="frmServerConfig" class="hidden">
+    <div class="form-group">
+        <label for="inputServerType">Module</label>
+        <select id="inputServerType" name="type">
+            <option value="other">Other</option>
+            <option value="lumio" selected>Lumio</option>
+        </select>
+    </div>
+    <div class="form-group">
+        <label for="inputHostname">Hostname or IP Address</label>
+        <input id="inputHostname" name="hostname">
+    </div>
+    <div class="form-group hidden">
+        <label for="inputSecure">Secure</label>
+        <input id="inputSecure" name="secure" type="checkbox">
+    </div>
+    <div class="form-group hidden">
+        <label for="inputPort">Port</label>
+        <input id="inputPort" name="port" value="443">
+    </div>
+    <div class="form-group">
+        <label for="inputUsername">Username</label>
+        <input id="inputUsername" name="username">
+    </div>
+    <div class="form-group">
+        <label for="inputPassword">Password</label>
+        <input id="inputPassword" name="password">
+    </div>
+    <div class="form-group">
+        <label for="serverHash">Access Hash</label>
+        <textarea id="serverHash" name="accesshash"></textarea>
+    </div>
+</form>
+
+<form id="unrelatedForm" class="hidden">
+    <div class="form-group">
+        <label for="unrelatedUsername">Username</label>
+        <input id="unrelatedUsername" name="username" value="agent-user">
+    </div>
+    <div class="form-group">
+        <label for="unrelatedPassword">Password</label>
+        <input id="unrelatedPassword" name="password" value="not-a-lumio-secret">
+    </div>
+    <div class="form-group">
+        <label for="unrelatedHash">Access Hash</label>
+        <textarea id="unrelatedHash" name="accesshash">not-a-lumio-hash</textarea>
+    </div>
+</form>
+
+<script src="../../modules/servers/lumio/assets/admin-server-config.js"></script>
+<script>
+    window.fixtureErrors = [];
+    window.addEventListener('error', function (event) {
+        window.fixtureErrors.push(String(event.message || 'window error'));
+    });
+    window.addEventListener('unhandledrejection', function (event) {
+        window.fixtureErrors.push(String(event.reason || 'unhandled rejection'));
+    });
+    document.getElementById('newTestConn').addEventListener('click', function () {
+        document.body.dataset.fixtureSubmitted = JSON.stringify({
+            hostname: document.getElementById('inputHostname').value,
+            accesshash: document.getElementById('serverHash').value,
+            secure: document.getElementById('inputSecure').checked,
+            port: document.getElementById('inputPort').value
+        });
+    });
+</script>
+</body>
+</html>

@@ -1,0 +1,9 @@
+/vendor/
+/.phpunit.cache/
+/.phpunit.result.cache
+/.tmp/
+/build/
+/dist/
+
+*.zip
+*.zip.sha256

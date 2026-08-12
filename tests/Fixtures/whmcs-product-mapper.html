@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Lumio WHMCS 商品映射验收</title>
+    <style>
+        body{margin:0;background:#eef1f5;color:#283847;font:14px Arial,"Microsoft YaHei",sans-serif}
+        main{max-width:1120px;margin:28px auto;padding:0 16px}
+        .card{background:#fff;border:1px solid #cbd6df;border-radius:4px;padding:18px}
+        .module-head{display:grid;grid-template-columns:180px 1fr;gap:1px;background:#d7dee5;border:1px solid #d7dee5}
+        .module-head>div{background:#f4f6f8;padding:10px}
+        table{width:100%;border-collapse:collapse;margin-top:14px}
+        th,td{border:1px solid #d7dee5;padding:10px;text-align:left;vertical-align:top}
+        th{width:250px;background:#f4f6f8;text-align:right;font-weight:400}
+        input[type=text],textarea{width:min(96%,560px);box-sizing:border-box;padding:7px;border:1px solid #b8c5cf;border-radius:3px}
+        textarea{min-height:68px}.description{display:block;margin-top:5px;color:#677887;font-size:12px}
+        .actions{text-align:center;margin-top:16px}.actions button{padding:8px 16px}
+        main.fixture-narrow{box-sizing:border-box;width:390px;max-width:calc(100vw - 16px);margin:8px auto;padding:0 8px}main.fixture-narrow .card{padding:8px}main.fixture-narrow .module-head{grid-template-columns:1fr}main.fixture-narrow th,main.fixture-narrow td{display:block;width:auto;text-align:left}main.fixture-narrow th{border-bottom:0}
+        @media(max-width:768px){main{margin:8px auto;padding:0 8px}.card{padding:8px}.module-head{grid-template-columns:1fr}th,td{display:block;width:auto;text-align:left}th{border-bottom:0}}
+    </style>
+</head>
+<body>
+<main>
+    <h1>Products/Services</h1>
+    <form id="product-form">
+        <input id="inputProductId" type="hidden" value="11">
+        <div class="card">
+            <div class="module-head"><div>Module Name</div><div>Lumio</div><div>Server Group</div><div>Lumio</div></div>
+            <div id="divModuleSettings">
+                <table>
+                    <tbody>
+                    <tr>
+                        <th>Lumio 商品 SKU</th><td><input type="text" name="packageconfigoption[1]" value=""><span class="description">自动填写<span class="lumio-option-marker" data-lumio-option="1" hidden></span><script type="application/json" class="lumio-catalog-bootstrap"></script></span></td>
+                        <th>固定配置 JSON</th><td><textarea name="packageconfigoption[2]"></textarea><span class="description">自动填写<span class="lumio-option-marker" data-lumio-option="2" hidden></span></span></td>
+                    </tr>
+                    <tr>
+                        <th>Lumio 附加产品 ID</th><td><input type="text" name="packageconfigoption[3]" value=""><span class="description">自动填写<span class="lumio-option-marker" data-lumio-option="3" hidden></span></span></td>
+                        <th>月付成本上限</th><td><input type="text" name="packageconfigoption[4]" value=""><span class="lumio-option-marker" data-lumio-option="4" hidden></span></td>
+                    </tr>
+                    <tr>
+                        <th>季付成本上限</th><td><input type="text" name="packageconfigoption[5]" value=""><span class="lumio-option-marker" data-lumio-option="5" hidden></span></td>
+                        <th>半年付成本上限</th><td><input type="text" name="packageconfigoption[6]" value=""><span class="lumio-option-marker" data-lumio-option="6" hidden></span></td>
+                    </tr>
+                    <tr>
+                        <th>年付成本上限</th><td><input type="text" name="packageconfigoption[7]" value=""><span class="lumio-option-marker" data-lumio-option="7" hidden></span></td>
+                        <th>两年付成本上限</th><td><input type="text" name="packageconfigoption[8]" value=""><span class="lumio-option-marker" data-lumio-option="8" hidden></span></td>
+                    </tr>
+                    <tr>
+                        <th>三年付成本上限</th><td><input type="text" name="packageconfigoption[9]" value=""><span class="lumio-option-marker" data-lumio-option="9" hidden></span></td>
+                        <th>兼容字段 10</th><td><label><input type="checkbox"><span class="lumio-option-marker" data-lumio-option="10" hidden></span></label></td>
+                    </tr>
+                    <tr>
+                        <th>兼容字段 11</th><td><input type="text" value="0"><span class="lumio-option-marker" data-lumio-option="11" hidden></span></td>
+                        <th>终止政策</th><td><label><input type="checkbox"><span class="lumio-option-marker" data-lumio-option="12" hidden></span> 我已了解</label></td>
+                    </tr>
+                    </tbody>
+                </table>
+            </div>
+            <div class="actions"><button type="submit">Save Changes</button></div>
+        </div>
+    </form>
+    <pre id="fixture-output"></pre>
+</main>
+<script>
+    (function () {
+        window.fixtureErrors = [];
+        window.addEventListener('error', function (event) {
+            window.fixtureErrors.push(String(event.message || 'window error'));
+        });
+        window.addEventListener('unhandledrejection', function (event) {
+            window.fixtureErrors.push(String(event.reason || 'unhandled rejection'));
+        });
+        var ready = {
+            state: 'ready', message: '已获取 2 个 Lumio 商品。', request_id: null,
+            products: [
+                {sku:'example-product-a',name:'Example Product A',prices:[{billing_cycle:'month',price_cents:10000,setup_fee_cents:500},{billing_cycle:'year',price_cents:100000,setup_fee_cents:500}],option_groups:[{id:31,name:'选项组 A',input_type:'select',required:true,values:[{code:'standard',label:'Standard',price_delta_cents:0},{code:'enhanced',label:'Enhanced',price_delta_cents:2000}]},{id:32,name:'选项组 B',input_type:'radio',required:true,values:[{code:'option-a',label:'Option A',price_delta_cents:0},{code:'option-b',label:'Option B',price_delta_cents:3000}]}],addons:[{id:41,name:'示例附加项 A',billing_type:'recurring',price_cents:600,required:true},{id:42,name:'示例附加项 B',billing_type:'one_time',price_cents:900,required:false}],availability:'available'},
+                {sku:'example-product-b',name:'Example Product B',prices:[{billing_cycle:'month',price_cents:20000,setup_fee_cents:0}],option_groups:[],addons:[],availability:'unavailable'}
+            ]
+        };
+        var parameters = new URLSearchParams(window.location.search);
+        if (parameters.get('layout') === 'narrow') {
+            document.querySelector('main').classList.add('fixture-narrow');
+        }
+        var state = parameters.get('state') || 'ready';
+        var payload = state === 'empty'
+            ? {state:'empty',message:'Lumio 当前没有可供对接销售的商品。',request_id:null,products:[]}
+            : (state === 'error'
+                ? {state:'error',message:'无法连接 Lumio：连接超时。',request_id:'whmcs-fixture-request-1',products:[]}
+                : (state === 'loading'
+                    ? {state:'loading',message:'Loading Lumio products...',request_id:null,products:[]}
+                    : ready));
+        document.querySelector('.lumio-catalog-bootstrap').textContent = JSON.stringify(payload);
+        window.fetchModuleSettings = function () {
+            window.setTimeout(function () {
+                ready.message = '商品目录已重新获取。';
+                document.querySelector('.lumio-catalog-bootstrap').textContent = JSON.stringify(ready);
+                document.querySelector('.lumio-catalog-bootstrap').parentNode.appendChild(document.createTextNode(' '));
+            }, 300);
+        };
+        document.getElementById('product-form').addEventListener('submit', function (event) {
+            event.preventDefault();
+            var values = {};
+            for (var index = 1; index <= 9; index += 1) {
+                var control = document.querySelector('[name="packageconfigoption[' + index + ']"]');
+                values[index] = control ? control.value : '';
+            }
+            document.getElementById('fixture-output').textContent = JSON.stringify(values, null, 2);
+        });
+        if (parameters.get('mapper') !== 'off') {
+            var script = document.createElement('script');
+            script.src = '../../modules/servers/lumio/assets/admin-product-mapper.js';
+            document.body.appendChild(script);
+        }
+    }());
+</script>
+</body>
+</html>
