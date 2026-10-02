@@ -42,10 +42,21 @@ Deterministic errors require an administrator to resolve the cause and retry exp
 ## Suspend, resume, or terminate does not complete
 
 - After a suspend request is safely accepted, WHMCS may report success while cron confirms the final state.
-- If Lumio ultimately fails to suspend, the module restores the WHMCS service to Active.
+- The module confirms Lumio's state and this connection's hold before updating WHMCS. Check the logs when the outcome is unknown.
 - Resume and terminate complete only after Lumio reaches the final target state.
 - `OTHER_HOLDS_REMAIN` means another billing, administrator, or system restriction must be resolved first.
 - Immediate termination releases resources and forfeits the remaining paid period. Lumio does not issue an automatic refund.
+
+## Tasks requiring administrator attention
+
+| Error or state | Action |
+| --- | --- |
+| `PROVISIONING_RETRY_EXPIRED` | Automatic provisioning has a one-hour window. If the service remains Pending, find its ID in Activity Log and click **Create** on that service. Processing resumes with the original purchase request and idempotency key. |
+| `RENEWAL_RETRY_EXPIRED` / `needs_attention` | Reconcile wallet charges, due dates, and manual fulfillment before using **Retry Paid Renewals** for an unfulfilled invoice. Do not renew an already fulfilled invoice again. |
+| `LEGACY_INVOICE_REVIEW` | Reconcile historical invoices with fulfillment records before retrying. |
+| `OPERATION_TIMED_OUT` | Automatic processing stopped; remote work is not necessarily cancelled. Check its state before retrying explicitly. |
+
+Do not delete pending requests or change request references to retry. Restrictions owned by other hold sources must be released by those sources.
 
 ## Where to check
 

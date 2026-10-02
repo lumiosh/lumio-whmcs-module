@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Lumio\Whmcs;
 
+use Lumio\Whmcs\Support\UtcTime;
+
 use Lumio\Whmcs\Contract\ApiClientInterface;
 use Lumio\Whmcs\Contract\LoggerInterface;
 use Lumio\Whmcs\Contract\RuntimeInterface;
@@ -17,6 +19,8 @@ use Lumio\Whmcs\Support\Sanitizer;
 final class ModuleWorkflow
 {
     private const RECONCILIATION_INTERVAL_SECONDS = 300;
+
+    public const PENDING_TIMEOUT_SECONDS = 3600;
 
     private const CREATE_POLL_SECONDS = 300;
 
@@ -66,11 +70,9 @@ final class ModuleWorkflow
         }
     }
 
-    public function createAccount(): string
+    public function createAccount(bool $pendingOnly = false): string
     {
-        return $this->execute('CreateAccount', function (): string {
-            $this->runtime->assertProductCompatible($this->serviceId);
-            $this->configuration->assertTerminationPolicyAccepted();
+        return $this->execute('CreateAccount', function () use ($pendingOnly): string {
             $state = $this->states->get($this->serviceId);
             $status = strtolower((string) $this->runtime->serviceStatus($this->serviceId));
             if ($status === 'active') {
@@ -93,7 +95,23 @@ final class ModuleWorkflow
                 return 'Lumio has already reported a successful activation to WHMCS and cannot report it again; if the service is still Pending, review the WHMCS Module Queue and Activity Log';
             }
 
-            $paidInvoiceId = $this->runtime->latestPaidHostingInvoiceId($this->serviceId);
+            $started = UtcTime::timestamp((string) ($state['purchase_started_at'] ?? ''));
+            if ($started !== false && $started + self::PENDING_TIMEOUT_SECONDS <= time()) {
+                if ($pendingOnly) {
+                    $this->states->save($this->serviceId, ['delivery_state' => 'purchase_blocked', 'next_poll_at' => null,
+                        'last_error_code' => 'PROVISIONING_RETRY_EXPIRED', 'last_error_message' => 'Automatic provisioning polling stopped; retry explicitly with the saved purchase reference']);
+                    if (($state['last_error_code'] ?? null) !== 'PROVISIONING_RETRY_EXPIRED') {
+                        $this->logger->activity(sprintf('Service #%d: provisioning timed out (PROVISIONING_RETRY_EXPIRED). Manually retry Create in WHMCS; the saved purchase request will be reused.', $this->serviceId));
+                    }
+                    return 'Automatic provisioning reached its retry deadline; explicitly retry the original purchase';
+                }
+                $started = false;
+            }
+            if ($started === false) $this->states->save($this->serviceId, ['purchase_started_at' => gmdate('Y-m-d H:i:s')]);
+
+            $this->runtime->assertProductCompatible($this->serviceId);
+            $this->configuration->assertTerminationPolicyAccepted();
+            $paidInvoiceId = $this->runtime->paidHostingInvoiceIds($this->serviceId)[0] ?? null;
             if ($paidInvoiceId === null) {
                 return 'No paid WHMCS invoice was found for this service; Lumio will not charge the wallet in advance';
             }
@@ -259,269 +277,247 @@ final class ModuleWorkflow
         });
     }
 
-    public function renew(bool $pendingOnly = false): string
+    private function renewalProcessor(): RenewalProcessor
     {
-        return $this->execute('Renew', function () use ($pendingOnly): string {
-            $this->runtime->assertProductCompatible($this->serviceId);
-            $this->configuration->assertTerminationPolicyAccepted();
+        return new RenewalProcessor($this->serviceId, $this->configuration, $this->api, $this->states, $this->runtime, $this->properties);
+    }
+
+    public function renew(bool $pendingOnly = false, bool $manualRetry = false): string
+    {
+        return $this->execute('Renew', function () use ($pendingOnly, $manualRetry): string {
             $state = $this->states->get($this->serviceId);
-            $pendingAction = $state['pending_action'] ?? null;
-            if ($pendingOnly && $pendingAction !== 'renew') {
-                return 'success';
-            }
-            $lumioServiceId = $this->lumioServiceId($state);
-            $invoiceId = $this->runtime->latestPaidHostingInvoiceId($this->serviceId);
-            if ($invoiceId === null) {
-                return 'No paid WHMCS renewal invoice was found for this service; Lumio will not charge the wallet';
-            }
-            if ((int) ($state['provisioning_invoice_id'] ?? 0) === $invoiceId) {
-                return 'Only the original provisioning invoice exists; no new paid renewal invoice was found';
-            }
-            if ((int) ($state['last_renewal_invoice_id'] ?? 0) === $invoiceId) {
-                return 'success';
-            }
-            if ($pendingAction !== null && $pendingAction !== 'renew') {
-                return 'Another Lumio lifecycle operation is still pending; retry the renewal later';
-            }
-
-            $pendingInvoiceId = isset($state['pending_invoice_id']) ? (int) $state['pending_invoice_id'] : 0;
-            if ($pendingAction === 'renew'
-                && $pendingInvoiceId > 0
-                && $pendingInvoiceId !== $invoiceId) {
-                return sprintf(
-                    'The Lumio result for WHMCS renewal invoice #%d is still pending; invoice #%d cannot be used until the previous renewal is retried',
-                    $pendingInvoiceId,
-                    $invoiceId,
-                );
-            }
-
-            $externalReference = $this->stringOrNull($state['pending_external_reference'] ?? null);
-            $payload = is_array($state['pending_payload'] ?? null) ? $state['pending_payload'] : null;
-            if ($pendingAction !== 'renew' || $externalReference === null || $payload === null) {
-                $quote = $this->api->renewalQuote($lumioServiceId);
-                $configuredCycle = $this->configuration->billingCycle();
-                $quotedCycle = strtolower(trim((string) ($quote['billing_cycle'] ?? '')));
-                if ($quotedCycle !== $configuredCycle) {
-                    throw new ConfigurationException(sprintf(
-                        'The current WHMCS billing cycle (%s) does not match the Lumio service cycle (%s); correct the product or service billing cycle first',
-                        $configuredCycle,
-                        $quotedCycle === '' ? 'unknown' : $quotedCycle,
-                    ));
-                }
-                $cap = $this->configuration->costCapCents();
-                $quotedTotal = (int) ($quote['total_cents'] ?? -1);
-                if ($quotedTotal < 0 || $quotedTotal > $cap) {
-                    throw new ApiException(
-                        409,
-                        'PRICE_CHANGED',
-                        $this->api->lastRequestId(),
-                        null,
-                        'The Lumio renewal amount exceeds the cost cap configured for this WHMCS product',
-                    );
-                }
-                $expectedDueAt = trim((string) ($quote['current_next_due_at'] ?? ''));
-                if ($expectedDueAt === '') {
-                    throw new TransportException('The Lumio renewal quote is missing the current due date', $this->api->lastRequestId());
-                }
-                $externalReference = $this->configuration->externalReference(
-                    $this->serviceId,
-                    'renew-invoice',
-                    $invoiceId,
-                );
-                $payload = [
-                    'external_reference' => $externalReference,
-                    'expected_next_due_at' => $expectedDueAt,
-                    'expected_total_cents' => $cap,
-                ];
-                $this->states->save($this->serviceId, [
-                    'pending_action' => 'renew',
-                    'pending_invoice_id' => $invoiceId,
-                    'pending_external_reference' => $externalReference,
-                    'pending_operation_id' => null,
-                    'pending_payload' => $payload,
-                    'last_error_code' => null,
-                    'last_error_message' => null,
-                ]);
-            }
-
-            try {
-                $result = $this->api->renew(
-                    $lumioServiceId,
-                    $payload,
-                    $this->configuration->idempotencyKey($externalReference),
-                );
-            } catch (ApiException $exception) {
-                $this->clearPending();
-                throw $exception;
-            }
-            $operationId = $this->requiredOperationId($result['operation_id'] ?? null);
-            $this->states->save($this->serviceId, [
-                'last_renewal_invoice_id' => $invoiceId,
-                'pending_invoice_id' => null,
-                'pending_action' => null,
-                'pending_external_reference' => null,
-                'pending_operation_id' => null,
-                'pending_payload' => null,
-                'last_request_id' => $this->api->lastRequestId(),
-                'last_error_code' => null,
-                'last_error_message' => null,
-            ]);
-            $this->properties->save([
-                self::PROPERTY_OPERATION_ID => $operationId,
-                self::PROPERTY_LAST_RENEWAL_INVOICE_ID => $invoiceId,
-                self::PROPERTY_LAST_REQUEST_ID => (string) $this->api->lastRequestId(),
-                self::PROPERTY_LAST_ERROR => '',
-            ]);
-            return 'success';
+            $serviceId = (int) ($state['lumio_service_id'] ?? $this->properties->get(self::PROPERTY_SERVICE_ID) ?? 0);
+            return $this->renewalProcessor()->run($serviceId, $pendingOnly, $manualRetry);
         });
     }
 
-    public function lifecycle(string $action): string
+    public function lifecycle(string $action, bool $pendingOnly = false): string
     {
         if (! in_array($action, ['suspend', 'resume', 'terminate'], true)) {
             throw new \InvalidArgumentException('The Lumio lifecycle action is not supported');
         }
-
-        return $this->execute(ucfirst($action), function () use ($action): string {
+        return $this->execute(ucfirst($action), function () use ($action, $pendingOnly): string {
+            $this->renewalProcessor()->importLegacy();
+            $state = $this->states->get($this->serviceId);
+            $pendingAction = $this->stringOrNull($state['pending_action'] ?? null);
+            if ($pendingOnly && $pendingAction !== $action) {
+                return 'This lifecycle request is no longer pending; no WHMCS status change was requested';
+            }
+            if ($pendingAction !== null) {
+                $started = UtcTime::timestamp((string) ($state['pending_started_at'] ?? $state['updated_at'] ?? ''));
+                if ($started === false) {
+                    $this->states->save($this->serviceId, ['pending_started_at' => gmdate('Y-m-d H:i:s')]);
+                } elseif ($started + self::PENDING_TIMEOUT_SECONDS <= time()) {
+                    $this->interruptPending('OPERATION_TIMED_OUT');
+                    if ($pendingOnly || $pendingAction === $action) {
+                        return 'The Lumio operation reached its retry deadline; automatic polling stopped. Retry explicitly or choose another action';
+                    }
+                    $pendingAction = null;
+                }
+                if ($pendingAction !== null && $pendingAction !== $action) {
+                    // An explicit new intent must reach the backend, whose service lock
+                    // and action rules decide whether it is safe. Do not invent success.
+                    $this->interruptPending('SUPERSEDED_BY_' . strtoupper($action));
+                    $pendingAction = null;
+                }
+                $state = $this->states->get($this->serviceId);
+            }
             $this->runtime->assertProductCompatible($this->serviceId);
             $this->configuration->assertTerminationPolicyAccepted();
-            $state = $this->states->get($this->serviceId);
             $lumioServiceId = $this->lumioServiceId($state);
-            $pendingAction = $this->stringOrNull($state['pending_action'] ?? null);
-            $lastCompletedAt = strtotime((string) ($state['last_completed_at'] ?? ''));
-            if ($pendingAction === null
-                && ($state['last_completed_action'] ?? null) === $action
-                && $lastCompletedAt !== false
-                && $lastCompletedAt + 120 > time()) {
-                return sprintf('Lumio %s succeeded and is waiting for WHMCS to finish the local status update', $action);
-            }
-            if ($pendingAction !== null && $pendingAction !== $action) {
-                return sprintf('Lumio %s is still pending and %s cannot run at the same time', $pendingAction, $action);
-            }
-
             if ($pendingAction === null) {
-                $service = $this->api->service($lumioServiceId);
-                $serviceState = strtolower(Sanitizer::text((string) ($service['state'] ?? ''), 32));
-                if (! in_array($serviceState, self::SERVICE_STATES, true)) {
-                    throw new TransportException('The Lumio API returned an unknown service state', $this->api->lastRequestId());
-                }
-                $this->states->save($this->serviceId, [
-                    'delivery_state' => $serviceState,
-                    'last_request_id' => $this->api->lastRequestId(),
-                ]);
-                $this->properties->save([
-                    self::PROPERTY_DELIVERY_STATE => $serviceState,
-                    self::PROPERTY_LAST_REQUEST_ID => (string) $this->api->lastRequestId(),
-                ]);
-                if ($this->serviceReachedTarget($action, $service)) {
-                    return 'success';
-                }
-            }
-
-            $externalReference = $this->stringOrNull($state['pending_external_reference'] ?? null);
-            $payload = is_array($state['pending_payload'] ?? null) ? $state['pending_payload'] : null;
-            $operationId = $this->stringOrNull($state['pending_operation_id'] ?? null);
-            if ($pendingAction !== $action || $externalReference === null || $payload === null) {
-                $sequence = (int) ($state['action_sequence'] ?? 0) + 1;
-                $externalReference = $this->configuration->externalReference(
-                    $this->serviceId,
-                    $action,
-                    $sequence,
-                );
-                $payload = ['external_reference' => $externalReference];
-                if ($action === 'terminate') {
-                    $payload['immediate'] = true;
-                }
-                $operationId = null;
-                $this->states->save($this->serviceId, [
-                    'pending_action' => $action,
-                    'pending_external_reference' => $externalReference,
-                    'pending_operation_id' => null,
-                    'pending_payload' => $payload,
-                    'action_sequence' => $sequence,
-                    'poll_attempts' => 0,
-                    'next_poll_at' => null,
-                    'last_error_code' => null,
-                    'last_error_message' => null,
-                ]);
-            }
-
-            if ($operationId === null) {
-                $result = $this->api->lifecycle(
-                    $lumioServiceId,
-                    $action,
-                    $payload,
-                    $this->configuration->idempotencyKey($externalReference),
-                );
-                $operationId = $this->requiredOperationId($result['operation_id'] ?? null);
-                $this->states->save($this->serviceId, [
-                    'pending_operation_id' => $operationId,
-                    'last_request_id' => $this->api->lastRequestId(),
-                ]);
-                $this->properties->save([
-                    self::PROPERTY_OPERATION_ID => $operationId,
-                    self::PROPERTY_LAST_REQUEST_ID => (string) $this->api->lastRequestId(),
-                ]);
-            }
-
-            $operation = $this->api->operation($operationId);
-            $status = strtolower(trim((string) ($operation['status'] ?? 'processing')));
-            if (! in_array($status, self::OPERATION_STATES, true)) {
-                throw new TransportException('The Lumio API returned an unknown operation state', $this->api->lastRequestId());
-            }
-            if ($status === 'succeeded') {
-                if (! $this->lifecycleReachedTarget($action, $operation)) {
-                    $this->scheduleRetry();
-                    if ($action === 'suspend') {
+                $interrupted = $state['interrupted_operation'] ?? null;
+                if (is_array($interrupted) && ($interrupted['pending_action'] ?? null) === $action
+                    && ($interrupted['resumable'] ?? false) === true) {
+                    unset($interrupted['resumable'], $interrupted['reason']);
+                    $this->states->save($this->serviceId, $interrupted);
+                    $this->states->save($this->serviceId, ['pending_started_at' => gmdate('Y-m-d H:i:s'), 'next_poll_at' => null, 'poll_attempts' => 0, 'interrupted_operation' => null]);
+                    $state = $this->states->get($this->serviceId);
+                    $pendingAction = $action;
+                } else {
+                    $completedAt = UtcTime::timestamp((string) ($state['last_completed_at'] ?? ''));
+                    if (($state['last_completed_action'] ?? null) === $action && $completedAt !== false && $completedAt + 120 > time()) {
+                        return sprintf('Lumio %s succeeded and is waiting for WHMCS to finish the local status update', $action);
+                    }
+                    $service = $this->api->service($lumioServiceId);
+                    $serviceState = strtolower((string) ($service['state'] ?? ''));
+                    if (! in_array($serviceState, self::SERVICE_STATES, true)) {
+                        throw new TransportException('The Lumio API returned an unknown service state', $this->api->lastRequestId());
+                    }
+                    $this->states->save($this->serviceId, ['delivery_state' => $serviceState]);
+                    // Suspended/active describes the aggregate state, not ownership of
+                    // this connection's hold. Always register/release our own hold.
+                    if ($action === 'terminate' && in_array($serviceState, ['terminated', 'deleted'], true)) {
                         return 'success';
                     }
-                    $publicError = $action === 'resume' ? 'OTHER_HOLDS_REMAIN' : null;
-                    return $this->pending('waiting_for_target_state', $publicError, $this->api->lastRequestId());
+                    if (is_array($interrupted)) {
+                        $interrupted['resumable'] = false;
+                        $this->states->save($this->serviceId, ['interrupted_operation' => $interrupted]);
+                    }
                 }
-                $completedDeliveryState = match ($action) {
-                    'suspend' => 'suspended',
-                    'resume' => 'active',
-                    'terminate' => 'terminated',
-                };
+            }
+            $reference = $this->stringOrNull($state['pending_external_reference'] ?? null);
+            $payload = is_array($state['pending_payload'] ?? null) ? $state['pending_payload'] : null;
+            $operationId = $this->stringOrNull($state['pending_operation_id'] ?? null);
+            if ($pendingAction !== $action || $reference === null || $payload === null) {
+                $sequence = (int) ($state['action_sequence'] ?? 0) + 1;
+                $reference = $this->configuration->externalReference($this->serviceId, $action, $sequence);
+                $payload = ['external_reference' => $reference];
+                if ($action === 'terminate') $payload['immediate'] = true;
+                $operationId = null;
+                $this->states->save($this->serviceId, [
+                    'pending_action' => $action, 'pending_external_reference' => $reference,
+                    'pending_operation_id' => null, 'pending_payload' => $payload,
+                    'pending_started_at' => gmdate('Y-m-d H:i:s'), 'action_sequence' => $sequence,
+                    'poll_attempts' => 0, 'next_poll_at' => null,
+                    'last_error_code' => null, 'last_error_message' => null,
+                ]);
+            }
+            try {
+                if ($operationId === null) {
+                    $result = $this->api->lifecycle($lumioServiceId, $action, $payload, $this->configuration->idempotencyKey($reference));
+                    $operationId = $this->requiredOperationId($result['operation_id'] ?? null);
+                    $this->states->save($this->serviceId, ['pending_operation_id' => $operationId, 'last_request_id' => $this->api->lastRequestId()]);
+                    $this->properties->save([self::PROPERTY_OPERATION_ID => $operationId]);
+                }
+                $operation = $this->api->operation($operationId);
+            } catch (ApiException $exception) {
+                if (RenewalProcessor::definitiveRejection($exception)) {
+                    $this->interruptPending($exception->errorCode, false);
+                } else {
+                    $this->scheduleRetry($exception->errorCode, $exception->retryAfter);
+                }
+                throw $exception;
+            } catch (TransportException $exception) {
+                $this->scheduleRetry('TRANSPORT_ERROR');
+                throw $exception;
+            }
+            $status = strtolower((string) ($operation['status'] ?? ''));
+            if (! in_array($status, self::OPERATION_STATES, true)) {
+                $this->scheduleRetry('INVALID_OPERATION_STATE');
+                throw new TransportException('The Lumio API returned an unknown operation state', $this->api->lastRequestId());
+            }
+            $service = $operation['result']['service'] ?? [];
+            if ($status === 'succeeded') {
+                if (! $this->lifecycleReachedTarget($action, $operation)) {
+                    if ($action === 'resume' && ($service['remaining_holds'] ?? false) === true) {
+                        // Our hold was released. Another owner's hold is a completed
+                        // handoff to that owner, not an operation to poll forever.
+                        $this->clearPending();
+                        $this->recordError('OTHER_HOLDS_REMAIN', $this->api->lastRequestId(), 'This connection was resumed; another Lumio hold still prevents activation');
+                        return $this->pending('requires_manual_attention', 'OTHER_HOLDS_REMAIN', $this->api->lastRequestId());
+                    }
+                    $this->scheduleRetry();
+                    return $action === 'suspend' ? 'success' : $this->pending('waiting_for_target_state', null, $this->api->lastRequestId());
+                }
                 $this->clearPending();
                 $this->states->save($this->serviceId, [
-                    'delivery_state' => $completedDeliveryState,
-                    'last_completed_action' => $action,
-                    'last_completed_at' => gmdate('Y-m-d H:i:s'),
+                    'delivery_state' => $service['state'], 'last_completed_action' => $action,
+                    'last_completed_at' => gmdate('Y-m-d H:i:s'), 'interrupted_operation' => null,
                 ]);
-                $this->properties->save([
-                    self::PROPERTY_DELIVERY_STATE => $completedDeliveryState,
-                    self::PROPERTY_LAST_REQUEST_ID => (string) $this->api->lastRequestId(),
-                    self::PROPERTY_LAST_ERROR => '',
-                ]);
+                $this->properties->save([self::PROPERTY_DELIVERY_STATE => $service['state'], self::PROPERTY_LAST_ERROR => '']);
                 return 'success';
             }
-
-            if ($status === 'failed') {
+            if (in_array($status, ['failed', 'needs_attention'], true)) {
                 $publicError = $this->operationPublicError($operation) ?? 'ACTION_FAILED';
-                if ($action === 'suspend'
-                    && strtolower((string) $this->runtime->serviceStatus($this->serviceId)) === 'suspended') {
-                    $this->states->save($this->serviceId, [
-                        'pending_action' => 'suspend_rollback',
-                        'poll_attempts' => 0,
-                        'next_poll_at' => null,
-                    ]);
-                } else {
-                    $this->clearPending();
+                $definiteFailure = $status === 'failed' || ($operation['result']['action']['status'] ?? null) === 'failed';
+                $restore = $action === 'suspend' && $definiteFailure
+                    && ($service['state'] ?? null) === 'active'
+                    && strtolower((string) $this->runtime->serviceStatus($this->serviceId)) === 'suspended';
+                $this->interruptPending($publicError, ! $definiteFailure);
+                if ($restore) {
+                    $this->states->save($this->serviceId, ['pending_action' => 'suspend_rollback', 'pending_started_at' => gmdate('Y-m-d H:i:s')]);
                 }
-                $this->recordError($publicError, $this->api->lastRequestId(), $publicError);
-                return $this->pending($status, $publicError, $this->api->lastRequestId());
+                return $this->pending('requires_manual_attention', $publicError, $this->api->lastRequestId());
             }
-
             $publicError = $this->operationPublicError($operation);
             $this->scheduleRetry($publicError);
-            if ($action === 'suspend'
-                && $publicError === null
-                && in_array($status, ['queued', 'processing'], true)) {
-                return 'success';
-            }
+            if ($action === 'suspend' && $publicError === null && in_array($status, ['queued', 'processing'], true)) return 'success';
             return $this->pending($status, $publicError, $this->api->lastRequestId());
         });
+    }
+
+    /** Release only this connection's hold before correcting the WHMCS status. */
+    public function rollbackFailedSuspend(): string
+    {
+        return $this->execute('RollbackFailedSuspend', function (): string {
+            $state = $this->states->get($this->serviceId);
+            if (($state['pending_action'] ?? null) !== 'suspend_rollback') {
+                return 'The failed suspension is no longer awaiting rollback';
+            }
+            $started = UtcTime::timestamp($state['pending_started_at'] ?? null);
+            if ($started !== false && $started + self::PENDING_TIMEOUT_SECONDS <= time()) {
+                $this->interruptPending('ROLLBACK_TIMED_OUT');
+                return 'The rollback reached its retry deadline; reconcile the saved release request explicitly';
+            }
+            $current = strtolower((string) $this->runtime->serviceStatus($this->serviceId));
+            if (! in_array($current, ['active', 'suspended'], true)) {
+                $this->interruptPending('WHMCS_STATUS_CHANGED', false);
+                return 'A newer WHMCS status prevents automatic suspension rollback';
+            }
+            $reference = $this->stringOrNull($state['pending_external_reference'] ?? null);
+            $operationId = $this->stringOrNull($state['pending_operation_id'] ?? null);
+            if ($reference === null) {
+                $sequence = (int) ($state['action_sequence'] ?? 0) + 1;
+                $reference = $this->configuration->externalReference($this->serviceId, 'rollback-suspend', $sequence);
+                $this->states->save($this->serviceId, [
+                    'action_sequence' => $sequence, 'pending_external_reference' => $reference,
+                    'pending_payload' => ['external_reference' => $reference], 'pending_operation_id' => null,
+                    'pending_started_at' => $state['pending_started_at'] ?? gmdate('Y-m-d H:i:s'),
+                ]);
+                $operationId = null;
+            }
+            try {
+                if ($operationId === null) {
+                    $result = $this->api->lifecycle($this->lumioServiceId($state), 'resume',
+                        ['external_reference' => $reference], $this->configuration->idempotencyKey($reference));
+                    $operationId = $this->requiredOperationId($result['operation_id'] ?? null);
+                    $this->states->save($this->serviceId, ['pending_operation_id' => $operationId]);
+                }
+                $operation = $this->api->operation($operationId);
+                $service = $operation['result']['service'] ?? [];
+                $status = $operation['status'] ?? '';
+                if ($status === 'succeeded') {
+                    if (($service['state'] ?? null) !== 'active' || ($service['remaining_holds'] ?? false) === true) {
+                        $this->interruptPending('OTHER_HOLDS_REMAIN', false);
+                        return 'The connection hold was released, but Lumio is not active; WHMCS remains unchanged';
+                    }
+                    $current = strtolower((string) $this->runtime->serviceStatus($this->serviceId));
+                    if (! in_array($current, ['active', 'suspended'], true)) {
+                        $this->interruptPending('WHMCS_STATUS_CHANGED', false);
+                        return 'A newer WHMCS status prevents automatic suspension rollback';
+                    }
+                    if ($current === 'suspended') $this->runtime->restoreActiveStatusAfterFailedSuspend($this->serviceId);
+                    $this->clearPending();
+                    $this->states->save($this->serviceId, ['delivery_state' => 'active', 'interrupted_operation' => null]);
+                    $this->properties->save([self::PROPERTY_DELIVERY_STATE => 'active', self::PROPERTY_LAST_ERROR => '']);
+                    return 'success';
+                }
+                if (in_array($status, ['needs_attention', 'failed'], true)) {
+                    $this->interruptPending($this->operationPublicError($operation) ?? 'ROLLBACK_FAILED');
+                    return 'The hold release requires attention; WHMCS remains unchanged';
+                }
+                $this->scheduleRetry('ROLLBACK_PENDING');
+                return 'The hold release is still processing; WHMCS remains unchanged';
+            } catch (ApiException $exception) {
+                if (RenewalProcessor::definitiveRejection($exception)) $this->interruptPending($exception->errorCode, false);
+                else $this->scheduleRetry($exception->errorCode, $exception->retryAfter);
+                throw $exception;
+            } catch (\Throwable $exception) {
+                $this->scheduleRetry('ROLLBACK_PENDING');
+                throw $exception;
+            }
+        });
+    }
+
+    private function interruptPending(string $reason, bool $resumable = true): void
+    {
+        $state = $this->states->get($this->serviceId);
+        $snapshot = array_intersect_key($state, array_flip(['pending_action', 'pending_payload', 'pending_external_reference', 'pending_operation_id', 'pending_started_at']));
+        $this->clearPending();
+        $this->states->save($this->serviceId, ['interrupted_operation' => $snapshot + ['reason' => $reason, 'resumable' => $resumable]]);
+        $this->recordError($reason, $this->api->lastRequestId(), 'Automatic processing stopped; an explicit action can now be requested');
+        $this->logger->activity(sprintf('Service #%d stopped pending %s: %s; operation %s', $this->serviceId, $state['pending_action'] ?? '', $reason, $state['pending_operation_id'] ?? 'not assigned'));
     }
 
     private function execute(string $action, callable $callback): string
@@ -565,6 +561,7 @@ final class ModuleWorkflow
     {
         $this->states->save($this->serviceId, [
             'pending_action' => null,
+            'pending_started_at' => null,
             'pending_invoice_id' => null,
             'pending_external_reference' => null,
             'pending_operation_id' => null,
@@ -596,14 +593,14 @@ final class ModuleWorkflow
         };
     }
 
-    private function scheduleRetry(?string $errorCode = null): void
+    private function scheduleRetry(?string $errorCode = null, ?int $retryAfter = null): void
     {
         try {
             $state = $this->states->get($this->serviceId);
             $attempts = min(30, max(0, (int) ($state['poll_attempts'] ?? 0)) + 1);
             $this->states->save($this->serviceId, [
                 'poll_attempts' => $attempts,
-                'next_poll_at' => gmdate('Y-m-d H:i:s', time() + self::RECONCILIATION_INTERVAL_SECONDS),
+                'next_poll_at' => gmdate('Y-m-d H:i:s', time() + max(self::RECONCILIATION_INTERVAL_SECONDS, min(3600, $retryAfter ?? 0))),
                 'last_request_id' => $this->api->lastRequestId(),
             ] + ($errorCode === null ? [] : [
                 'last_error_code' => $errorCode,

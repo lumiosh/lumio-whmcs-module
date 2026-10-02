@@ -118,25 +118,25 @@ function lumio_TestConnection(array $params): array
 /** @param array<string, mixed> $params */
 function lumio_CreateAccount(array $params): string
 {
-    return lumio_run_workflow($params, static fn (ModuleWorkflow $workflow): string => $workflow->createAccount());
+    return lumio_run_workflow($params, static fn (ModuleWorkflow $workflow): string => $workflow->createAccount(\Lumio\Whmcs\WhmcsRuntime::isReconciling()));
 }
 
 /** @param array<string, mixed> $params */
 function lumio_SuspendAccount(array $params): string
 {
-    return lumio_run_workflow($params, static fn (ModuleWorkflow $workflow): string => $workflow->lifecycle('suspend'));
+    return lumio_run_workflow($params, static fn (ModuleWorkflow $workflow): string => $workflow->lifecycle('suspend', \Lumio\Whmcs\WhmcsRuntime::isReconciling()));
 }
 
 /** @param array<string, mixed> $params */
 function lumio_UnsuspendAccount(array $params): string
 {
-    return lumio_run_workflow($params, static fn (ModuleWorkflow $workflow): string => $workflow->lifecycle('resume'));
+    return lumio_run_workflow($params, static fn (ModuleWorkflow $workflow): string => $workflow->lifecycle('resume', \Lumio\Whmcs\WhmcsRuntime::isReconciling()));
 }
 
 /** @param array<string, mixed> $params */
 function lumio_TerminateAccount(array $params): string
 {
-    return lumio_run_workflow($params, static fn (ModuleWorkflow $workflow): string => $workflow->lifecycle('terminate'));
+    return lumio_run_workflow($params, static fn (ModuleWorkflow $workflow): string => $workflow->lifecycle('terminate', \Lumio\Whmcs\WhmcsRuntime::isReconciling()));
 }
 
 /** @param array<string, mixed> $params */
@@ -145,16 +145,32 @@ function lumio_Renew(array $params): string
     return lumio_run_workflow($params, static fn (ModuleWorkflow $workflow): string => $workflow->renew());
 }
 
+/** @return array<string, string> */
+function lumio_AdminCustomButtonArray(): array
+{
+    return ['Retry Paid Renewals' => 'RetryPaidRenewals'];
+}
+
+/** @param array<string, mixed> $params */
+function lumio_RetryPaidRenewals(array $params): string
+{
+    return lumio_run_workflow($params, static fn (ModuleWorkflow $workflow): string => $workflow->renew(false, true));
+}
+
 /**
- * Reconciles a renewal that already has a persisted invoice, payload, external
- * reference, and idempotency key. This function is invoked only by the module
- * cron through WHMCS ModuleCustom and is intentionally not exposed as a button.
- *
+ * Continue persisted invoices through cron's ModuleCustom dispatch. This entry
+ * point cannot restart an invoice that requires an explicit administrator retry.
  * @param array<string, mixed> $params
  */
 function lumio_ReconcileRenewal(array $params): string
 {
     return lumio_run_workflow($params, static fn (ModuleWorkflow $workflow): string => $workflow->renew(true));
+}
+
+/** @param array<string, mixed> $params */
+function lumio_RollbackFailedSuspend(array $params): string
+{
+    return lumio_run_workflow($params, static fn (ModuleWorkflow $workflow): string => $workflow->rollbackFailedSuspend());
 }
 
 /** @param array<string, mixed> $params @return array<string, mixed> */

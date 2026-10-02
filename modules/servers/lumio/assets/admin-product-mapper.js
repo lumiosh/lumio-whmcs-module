@@ -508,13 +508,23 @@
         }
         form.setAttribute('data-lumio-mapper-guard', '1');
         form.addEventListener('submit', function (event) {
-            if (!currentState || !currentState.dirty || !currentState.invalid) {
+            if (!currentState) {
+                return;
+            }
+            validateAndPreview(currentState, false);
+            if (!currentState.invalid) {
+                validateAndPreview(currentState, true);
+                return;
+            }
+            // Preserve an unavailable but unchanged mapping while saving unrelated
+            // fields such as Hidden, Retired, description, or retail price.
+            if (!currentState.dirty) {
                 return;
             }
             event.preventDefault();
             currentState.panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
             window.alert('Complete the Lumio product mapping before saving.');
-        });
+        }, true);
     }
 
     function renderReady(root, panel, bootstrap, bindings) {

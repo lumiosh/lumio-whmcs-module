@@ -11,6 +11,19 @@ use WHMCS\Database\Capsule;
 
 final class WhmcsRuntime implements RuntimeInterface
 {
+    private static bool $reconciling = false;
+
+    public static function isReconciling(): bool { return self::$reconciling; }
+
+    public function paidHostingInvoiceIds(int $serviceId): array
+    {
+        return Capsule::table('tblinvoiceitems as item')
+            ->join('tblinvoices as invoice', 'invoice.id', '=', 'item.invoiceid')
+            ->where('item.type', 'Hosting')->where('item.relid', $serviceId)
+            ->where('invoice.status', 'Paid')->distinct()->orderBy('invoice.id')
+            ->pluck('invoice.id')->map(static fn ($id): int => (int) $id)->all();
+    }
+
     public function withServiceLock(int $serviceId, callable $callback): mixed
     {
         return $this->withNamedLock($this->lockName('s', (string) $serviceId), 5, $callback);
@@ -95,7 +108,8 @@ final class WhmcsRuntime implements RuntimeInterface
             ])
             ->where(static function ($query): void {
                 $query->whereNull('lumio.next_poll_at')
-                    ->orWhere('lumio.next_poll_at', '<=', gmdate('Y-m-d H:i:s'));
+                    ->orWhere('lumio.next_poll_at', '<=', gmdate('Y-m-d H:i:s'))
+                    ->orWhere('lumio.purchase_started_at', '<=', gmdate('Y-m-d H:i:s', time() - ModuleWorkflow::PENDING_TIMEOUT_SECONDS));
             })
             ->orderBy('service.id')
             ->limit(max(1, min($limit, 100)))
@@ -107,17 +121,23 @@ final class WhmcsRuntime implements RuntimeInterface
 
     public function runModuleCommand(string $command, int $serviceId): array
     {
-        $allowed = ['ModuleCreate', 'ModuleRenew', 'ModuleSuspend', 'ModuleUnsuspend', 'ModuleTerminate'];
+        $allowed = ['ModuleCreate', 'ModuleRenew', 'ModuleSuspend', 'ModuleUnsuspend', 'ModuleTerminate', 'ModuleRollbackSuspend'];
         if (! in_array($command, $allowed, true)) {
             throw new \InvalidArgumentException('The WHMCS module command is not supported');
         }
         if (! function_exists('localAPI')) {
             throw new RuntimeException('The WHMCS Local API is unavailable');
         }
-        $result = $command === 'ModuleRenew'
-            ? localAPI('ModuleCustom', ['serviceid' => $serviceId, 'func_name' => 'ReconcileRenewal'])
-            : localAPI($command, ['serviceid' => $serviceId]);
-        return is_array($result) ? $result : ['result' => 'error', 'message' => 'The WHMCS Local API returned an invalid result'];
+        $previous = self::$reconciling;
+        self::$reconciling = true;
+        try {
+            $result = in_array($command, ['ModuleRenew', 'ModuleRollbackSuspend'], true)
+                ? localAPI('ModuleCustom', ['serviceid' => $serviceId, 'func_name' => $command === 'ModuleRenew' ? 'ReconcileRenewal' : 'RollbackFailedSuspend'])
+                : localAPI($command, ['serviceid' => $serviceId]);
+            return is_array($result) ? $result : ['result' => 'error', 'message' => 'The WHMCS Local API returned an invalid result'];
+        } finally {
+            self::$reconciling = $previous;
+        }
     }
 
     private function withNamedLock(

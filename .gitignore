@@ -7,3 +7,18 @@
 
 *.zip
 *.zip.sha256
+
+/tests/
+/phpunit.xml.dist
+/runtime/
+/coverage/
+/test-results/
+/screenshots/
+/.env
+/.env.*
+*.log
+*.sql
+*.sqlite
+*.sqlite3
+*.db
+*.jsonl

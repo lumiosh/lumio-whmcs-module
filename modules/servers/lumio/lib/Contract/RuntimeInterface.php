@@ -12,6 +12,9 @@ interface RuntimeInterface
 
     public function latestPaidHostingInvoiceId(int $serviceId): ?int;
 
+    /** @return list<int> All paid hosting invoices, oldest first. */
+    public function paidHostingInvoiceIds(int $serviceId): array;
+
     public function serviceStatus(int $serviceId): ?string;
 
     public function restoreActiveStatusAfterFailedSuspend(int $serviceId): void;

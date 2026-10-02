@@ -13,9 +13,14 @@ final class StateRepository implements StateRepositoryInterface
 {
     public const TABLE = 'mod_lumio_service_state';
 
-    private const JSON_FIELDS = ['purchase_payload', 'pending_payload'];
+    private const JSON_FIELDS = ['purchase_payload', 'pending_payload', 'interrupted_operation'];
 
     private const WRITABLE_FIELDS = [
+        'purchase_started_at',
+        'pending_started_at',
+        'interrupted_operation',
+        'renewal_ledger_initialized_at',
+        'renewal_legacy_invoice_cutoff',
         'purchase_external_reference',
         'purchase_operation_id',
         'purchase_payload',
@@ -71,37 +76,72 @@ final class StateRepository implements StateRepositoryInterface
                         $table->dateTime('last_completed_at')->nullable()->after('last_completed_action');
                     });
                 }
-                return;
+            } else {
+                $schema->create(self::TABLE, static function (Blueprint $table): void {
+                    $table->unsignedInteger('service_id')->primary();
+                    $table->string('purchase_external_reference', 190)->nullable();
+                    $table->string('purchase_operation_id', 64)->nullable();
+                    $table->text('purchase_payload')->nullable();
+                    $table->unsignedBigInteger('lumio_service_id')->nullable();
+                    $table->string('lumio_service_number', 64)->nullable();
+                    $table->string('delivery_state', 32)->default('pending');
+                    $table->dateTime('activation_reported_at')->nullable();
+                    $table->dateTime('activation_acknowledged_at')->nullable();
+                    $table->unsignedBigInteger('provisioning_invoice_id')->nullable();
+                    $table->unsignedBigInteger('last_renewal_invoice_id')->nullable();
+                    $table->unsignedBigInteger('pending_invoice_id')->nullable();
+                    $table->string('pending_action', 32)->nullable();
+                    $table->string('pending_external_reference', 190)->nullable();
+                    $table->string('pending_operation_id', 64)->nullable();
+                    $table->text('pending_payload')->nullable();
+                    $table->unsignedInteger('action_sequence')->default(0);
+                    $table->string('last_completed_action', 32)->nullable();
+                    $table->dateTime('last_completed_at')->nullable();
+                    $table->string('last_request_id', 128)->nullable();
+                    $table->string('last_error_code', 64)->nullable();
+                    $table->string('last_error_message', 255)->nullable();
+                    $table->unsignedInteger('poll_attempts')->default(0);
+                    $table->dateTime('next_poll_at')->nullable();
+                    $table->dateTime('created_at');
+                    $table->dateTime('updated_at');
+                    $table->index(['pending_action', 'next_poll_at'], 'idx_lumio_pending_poll');
+                });
             }
-            $schema->create(self::TABLE, static function (Blueprint $table): void {
-                $table->unsignedInteger('service_id')->primary();
-                $table->string('purchase_external_reference', 190)->nullable();
-                $table->string('purchase_operation_id', 64)->nullable();
-                $table->text('purchase_payload')->nullable();
-                $table->unsignedBigInteger('lumio_service_id')->nullable();
-                $table->string('lumio_service_number', 64)->nullable();
-                $table->string('delivery_state', 32)->default('pending');
-                $table->dateTime('activation_reported_at')->nullable();
-                $table->dateTime('activation_acknowledged_at')->nullable();
-                $table->unsignedBigInteger('provisioning_invoice_id')->nullable();
-                $table->unsignedBigInteger('last_renewal_invoice_id')->nullable();
-                $table->unsignedBigInteger('pending_invoice_id')->nullable();
-                $table->string('pending_action', 32)->nullable();
-                $table->string('pending_external_reference', 190)->nullable();
-                $table->string('pending_operation_id', 64)->nullable();
-                $table->text('pending_payload')->nullable();
-                $table->unsignedInteger('action_sequence')->default(0);
-                $table->string('last_completed_action', 32)->nullable();
-                $table->dateTime('last_completed_at')->nullable();
-                $table->string('last_request_id', 128)->nullable();
-                $table->string('last_error_code', 64)->nullable();
-                $table->string('last_error_message', 255)->nullable();
-                $table->unsignedInteger('poll_attempts')->default(0);
-                $table->dateTime('next_poll_at')->nullable();
-                $table->dateTime('created_at');
-                $table->dateTime('updated_at');
-                $table->index(['pending_action', 'next_poll_at'], 'idx_lumio_pending_poll');
-            });
+            foreach (['pending_started_at', 'purchase_started_at', 'renewal_ledger_initialized_at'] as $column) {
+                if (! $schema->hasColumn(self::TABLE, $column)) {
+                    $schema->table(self::TABLE, static fn (Blueprint $table) => $table->dateTime($column)->nullable());
+                }
+            }
+            if (! $schema->hasColumn(self::TABLE, 'interrupted_operation')) {
+                $schema->table(self::TABLE, static fn (Blueprint $table) => $table->text('interrupted_operation')->nullable());
+            }
+            if (! $schema->hasColumn(self::TABLE, 'renewal_legacy_invoice_cutoff')) {
+                $schema->table(self::TABLE, static fn (Blueprint $table) => $table->unsignedBigInteger('renewal_legacy_invoice_cutoff')->nullable());
+            }
+            // Freeze the upgrade boundary before any later payment callback. NULL
+            // also makes an interrupted migration resumable. New service rows use 0.
+            if (Capsule::table(self::TABLE)->whereNull('renewal_legacy_invoice_cutoff')->exists()) {
+                $cutoff = (int) Capsule::table('tblinvoices')->max('id');
+                Capsule::table(self::TABLE)->whereNull('renewal_legacy_invoice_cutoff')->update(['renewal_legacy_invoice_cutoff' => $cutoff]);
+            }
+            if (! $schema->hasTable('mod_lumio_renewals')) {
+                $schema->create('mod_lumio_renewals', static function (Blueprint $table): void {
+                    $table->unsignedInteger('service_id');
+                    $table->unsignedBigInteger('invoice_id');
+                    $table->string('status', 32)->default('queued');
+                    $table->text('payload')->nullable();
+                    $table->string('external_reference', 190)->nullable();
+                    $table->string('operation_id', 64)->nullable();
+                    $table->string('last_error_code', 64)->nullable();
+                    $table->dateTime('started_at')->nullable();
+                    $table->dateTime('next_poll_at')->nullable();
+                    $table->dateTime('completed_at')->nullable();
+                    $table->dateTime('created_at');
+                    $table->dateTime('updated_at');
+                    $table->primary(['service_id', 'invoice_id']);
+                    $table->index(['status', 'next_poll_at'], 'idx_lumio_renewal_poll');
+                });
+            }
         });
     }
 
@@ -145,6 +185,7 @@ final class StateRepository implements StateRepositoryInterface
         }
         Capsule::table(self::TABLE)->insert($encoded + [
             'service_id' => $serviceId,
+            'renewal_legacy_invoice_cutoff' => 0,
             'delivery_state' => (string) ($encoded['delivery_state'] ?? 'pending'),
             'action_sequence' => (int) ($encoded['action_sequence'] ?? 0),
             'poll_attempts' => (int) ($encoded['poll_attempts'] ?? 0),
@@ -153,13 +194,64 @@ final class StateRepository implements StateRepositoryInterface
         ]);
     }
 
+    public function renewals(int $serviceId): array
+    {
+        $result = [];
+        foreach (Capsule::table('mod_lumio_renewals')->where('service_id', $serviceId)->orderBy('invoice_id')->get() as $row) {
+            $item = (array) $row;
+            $item['payload'] = $this->decodeJson($item['payload']);
+            $result[] = $item;
+        }
+        return $result;
+    }
+
+    public function saveRenewal(int $serviceId, int $invoiceId, array $changes): void
+    {
+        $allowed = ['status', 'payload', 'external_reference', 'operation_id', 'last_error_code', 'started_at', 'next_poll_at', 'completed_at'];
+        if ($invoiceId < 1 || array_diff(array_keys($changes), $allowed) !== []) {
+            throw new \InvalidArgumentException('Invalid renewal ledger update');
+        }
+        if (isset($changes['payload'])) {
+            $changes['payload'] = json_encode($changes['payload'], JSON_THROW_ON_ERROR);
+        }
+        $query = Capsule::table('mod_lumio_renewals')->where('service_id', $serviceId)->where('invoice_id', $invoiceId);
+        $now = gmdate('Y-m-d H:i:s');
+        if ($query->exists()) {
+            $query->update($changes + ['updated_at' => $now]);
+        } else {
+            Capsule::table('mod_lumio_renewals')->insert($changes + [
+                'service_id' => $serviceId, 'invoice_id' => $invoiceId, 'created_at' => $now, 'updated_at' => $now,
+            ]);
+        }
+    }
+
+    public function pendingRenewalServiceIds(int $limit): array
+    {
+        // Only the oldest unfinished invoice may advance this service's billing period.
+        return Capsule::table('mod_lumio_renewals as renewal')
+            ->whereIn('renewal.status', ['queued', 'retry'])
+            ->where(static fn ($q) => $q->whereNull('renewal.next_poll_at')
+                ->orWhere('renewal.next_poll_at', '<=', gmdate('Y-m-d H:i:s'))
+                ->orWhere('renewal.started_at', '<=', gmdate('Y-m-d H:i:s', time() - \Lumio\Whmcs\RenewalProcessor::RETRY_WINDOW_SECONDS)))
+            ->whereNotExists(static function ($q): void {
+                $q->selectRaw('1')->from('mod_lumio_renewals as earlier')
+                    ->whereColumn('earlier.service_id', 'renewal.service_id')
+                    ->where('earlier.status', '!=', 'completed')
+                    ->whereColumn('earlier.invoice_id', '<', 'renewal.invoice_id');
+            })
+            ->orderBy('renewal.next_poll_at')->orderBy('renewal.service_id')
+            ->limit(max(1, min($limit, 100)))->pluck('renewal.service_id')
+            ->map(static fn ($id): int => (int) $id)->all();
+    }
+
     public function pendingLifecycle(int $limit): array
     {
         $rows = Capsule::table(self::TABLE)
             ->select(['service_id', 'pending_action'])
             ->whereIn('pending_action', ['renew', 'suspend', 'resume', 'terminate', 'suspend_rollback'])
             ->where(static function ($query): void {
-                $query->whereNull('next_poll_at')->orWhere('next_poll_at', '<=', gmdate('Y-m-d H:i:s'));
+                $query->whereNull('next_poll_at')->orWhere('next_poll_at', '<=', gmdate('Y-m-d H:i:s'))
+                    ->orWhere('pending_started_at', '<=', gmdate('Y-m-d H:i:s', time() - \Lumio\Whmcs\ModuleWorkflow::PENDING_TIMEOUT_SECONDS));
             })
             ->orderBy('next_poll_at')
             ->orderBy('service_id')
@@ -181,6 +273,10 @@ final class StateRepository implements StateRepositoryInterface
     {
         return [
             'service_id' => $serviceId,
+            'purchase_started_at' => null,
+            'pending_started_at' => null,
+            'interrupted_operation' => null,
+            'renewal_ledger_initialized_at' => null, 'renewal_legacy_invoice_cutoff' => 0,
             'purchase_external_reference' => null,
             'purchase_operation_id' => null,
             'purchase_payload' => null,
