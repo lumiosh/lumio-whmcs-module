@@ -6,10 +6,10 @@ The official Lumio provisioning module lets resellers sell, provision, and manag
 
 ## Download and install
 
-Download `lumio-whmcs-module-v1.1.7.zip` from the [v1.1.7 Release](https://github.com/lumiosh/lumio-whmcs-module/releases/tag/v1.1.7), upload it to the WHMCS installation root, and run:
+Download `lumio-whmcs-module-v1.1.8.zip` from the [v1.1.8 Release](https://github.com/lumiosh/lumio-whmcs-module/releases/tag/v1.1.8), upload it to the WHMCS installation root, and run:
 
 ```bash
-unzip -o lumio-whmcs-module-v1.1.7.zip
+unzip -o lumio-whmcs-module-v1.1.8.zip
 ```
 
 The module is extracted to `modules/servers/lumio/`.
@@ -37,7 +37,7 @@ See the [English Quick Start](docs/QUICKSTART.en.md) for the complete setup.
 - [中文使用教程](docs/QUICKSTART.zh-CN.md) / [English Quick Start](docs/QUICKSTART.en.md)
 - [中文排错指南](docs/TROUBLESHOOTING.zh-CN.md) / [English Troubleshooting](docs/TROUBLESHOOTING.en.md)
 - [Module Guide](modules/servers/lumio/README.md)
-- [v1.1.7 Changelog](modules/servers/lumio/CHANGELOG.md)
+- [v1.1.8 Changelog](modules/servers/lumio/CHANGELOG.md)
 
 ## License
 

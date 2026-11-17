@@ -1,13 +1,13 @@
-# Lumio WHMCS v1.1.7 Quick Start
+# Lumio WHMCS v1.1.8 Quick Start
 
 [简体中文](QUICKSTART.zh-CN.md) | [English](QUICKSTART.en.md)
 
 ## 1. Install the module
 
-Download `lumio-whmcs-module-v1.1.7.zip` from the [v1.1.7 Release](https://github.com/lumiosh/lumio-whmcs-module/releases/tag/v1.1.7), upload it to the WHMCS installation root, and run:
+Download `lumio-whmcs-module-v1.1.8.zip` from the [v1.1.8 Release](https://github.com/lumiosh/lumio-whmcs-module/releases/tag/v1.1.8), upload it to the WHMCS installation root, and run:
 
 ```bash
-unzip -o lumio-whmcs-module-v1.1.7.zip
+unzip -o lumio-whmcs-module-v1.1.8.zip
 ```
 
 The module is extracted to `modules/servers/lumio/`.

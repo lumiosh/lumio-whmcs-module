@@ -1,4 +1,4 @@
-# Lumio WHMCS Provisioning Module 1.1.7
+# Lumio WHMCS Provisioning Module 1.1.8
 
 [中文](#中文) | [English](#english)
 
@@ -16,10 +16,10 @@
 
 ### 安装
 
-将 `lumio-whmcs-module-v1.1.7.zip` 上传到 WHMCS 安装根目录，然后执行：
+将 `lumio-whmcs-module-v1.1.8.zip` 上传到 WHMCS 安装根目录，然后执行：
 
 ```bash
-unzip -o lumio-whmcs-module-v1.1.7.zip
+unzip -o lumio-whmcs-module-v1.1.8.zip
 ```
 
 模块会解压到 `modules/servers/lumio/`。
@@ -67,10 +67,10 @@ This module lets resellers sell, provision, and manage Lumio services from their
 
 ### Installation
 
-Upload `lumio-whmcs-module-v1.1.7.zip` to the WHMCS installation root and run:
+Upload `lumio-whmcs-module-v1.1.8.zip` to the WHMCS installation root and run:
 
 ```bash
-unzip -o lumio-whmcs-module-v1.1.7.zip
+unzip -o lumio-whmcs-module-v1.1.8.zip
 ```
 
 The module is extracted to `modules/servers/lumio/`.

@@ -22,13 +22,30 @@ final class AdminCatalogBootstrap
     private const MAX_ADDONS = 50;
     private const MAX_MONEY_CENTS = 999_999_999;
 
+    /** WHMCS tblpricing columns for each Lumio billing cycle: [price, setup fee]. */
+    private const RETAIL_COLUMNS = [
+        'month' => ['monthly', 'msetupfee'],
+        'quarter' => ['quarterly', 'qsetupfee'],
+        'semiannual' => ['semiannually', 'ssetupfee'],
+        'year' => ['annually', 'asetupfee'],
+        'biennial' => ['biennially', 'bsetupfee'],
+        'triennial' => ['triennially', 'tsetupfee'],
+    ];
+
     /** @var null|\Closure(int): array<mixed> */
     private readonly ?\Closure $catalogFetcher;
 
-    /** @param null|\Closure(int): array<mixed> $catalogFetcher */
-    public function __construct(?\Closure $catalogFetcher = null)
+    /** @var null|\Closure(int): array{paytype: string, usd: null|array<string, mixed>} */
+    private readonly ?\Closure $retailFetcher;
+
+    /**
+     * @param null|\Closure(int): array<mixed> $catalogFetcher
+     * @param null|\Closure(int): array{paytype: string, usd: null|array<string, mixed>} $retailFetcher
+     */
+    public function __construct(?\Closure $catalogFetcher = null, ?\Closure $retailFetcher = null)
     {
         $this->catalogFetcher = $catalogFetcher;
+        $this->retailFetcher = $retailFetcher;
     }
 
     /**
@@ -39,7 +56,7 @@ final class AdminCatalogBootstrap
      *     products: list<array<string, mixed>>
      * }
      */
-    public function load(int $serverGroupId): array
+    public function load(int $serverGroupId, int $productId = 0): array
     {
         if ($serverGroupId < 1) {
             return $this->result('select_group', 'Select and save a Server Group containing exactly one Lumio Server.');
@@ -54,7 +71,8 @@ final class AdminCatalogBootstrap
             if ($products === []) {
                 return $this->result('empty', 'Lumio currently has no products available for integration sales.');
             }
-            return $this->result('ready', sprintf('Loaded %d Lumio products.', count($products)), null, $products);
+            return $this->result('ready', sprintf('Loaded %d Lumio products.', count($products)), null, $products)
+                + ['retail' => $this->retail($productId)];
         } catch (ApiException $exception) {
             return $this->result(
                 'error',
@@ -113,6 +131,56 @@ final class AdminCatalogBootstrap
             ];
         }
         return $products;
+    }
+
+    /**
+     * The product's saved WHMCS retail price in USD, used only to warn the reseller
+     * when a billing cycle would sell below the Lumio cost. Never blocks anything.
+     *
+     * @return array{state: 'ready'|'no_usd'|'unavailable', cycles: array<string, array{price_cents: int, setup_fee_cents: int}>}
+     */
+    public function retail(int $productId): array
+    {
+        $unavailable = ['state' => 'unavailable', 'cycles' => []];
+        if ($productId < 1) {
+            return $unavailable;
+        }
+        try {
+            $fetcher = $this->retailFetcher;
+            $raw = $fetcher instanceof \Closure ? $fetcher($productId) : $this->fetchRetail($productId);
+        } catch (\Throwable) {
+            return $unavailable;
+        }
+        $paytype = strtolower(trim((string) ($raw['paytype'] ?? '')));
+        $usd = $raw['usd'] ?? null;
+        if ($paytype === 'free') {
+            $cycles = [];
+            foreach (array_keys(self::RETAIL_COLUMNS) as $cycle) {
+                $cycles[$cycle] = ['price_cents' => 0, 'setup_fee_cents' => 0];
+            }
+            return ['state' => 'ready', 'cycles' => $cycles];
+        }
+        if ($usd === false) {
+            return ['state' => 'no_usd', 'cycles' => []];
+        }
+        if (! is_array($usd)) {
+            return $unavailable;
+        }
+        $cycles = [];
+        foreach (self::RETAIL_COLUMNS as $cycle => [$priceColumn, $setupColumn]) {
+            if ($paytype === 'onetime' && $cycle !== 'month') {
+                continue;
+            }
+            $price = $this->retailCents($usd[$priceColumn] ?? null);
+            if ($price === null) {
+                continue;
+            }
+            $cycles[$cycle] = [
+                'price_cents' => $price,
+                'setup_fee_cents' => max(0, $this->retailCents($usd[$setupColumn] ?? null) ?? 0),
+            ];
+        }
+        return ['state' => 'ready', 'cycles' => $cycles];
     }
 
     /**
@@ -181,6 +249,32 @@ final class AdminCatalogBootstrap
             new CurlTransport(5, 15),
             new WhmcsLogger($apiKey),
         ))->catalog();
+    }
+
+    /** @return array{paytype: string, usd: false|null|array<string, mixed>} */
+    private function fetchRetail(int $productId): array
+    {
+        $paytype = (string) (Capsule::table('tblproducts')->where('id', $productId)->value('paytype') ?? '');
+        $currencyId = Capsule::table('tblcurrencies')->whereRaw('UPPER(code) = ?', ['USD'])->value('id');
+        if ($currencyId === null) {
+            return ['paytype' => $paytype, 'usd' => false];
+        }
+        $row = Capsule::table('tblpricing')
+            ->where('type', 'product')
+            ->where('relid', $productId)
+            ->where('currency', (int) $currencyId)
+            ->first();
+        return ['paytype' => $paytype, 'usd' => is_object($row) ? (array) $row : null];
+    }
+
+    /** WHMCS stores disabled cycles as -1.00; returns null for those and for unreadable values. */
+    private function retailCents(mixed $value): ?int
+    {
+        if (! is_numeric($value)) {
+            return null;
+        }
+        $cents = (int) round(((float) $value) * 100);
+        return $cents < 0 || $cents > self::MAX_MONEY_CENTS ? null : $cents;
     }
 
     private function decryptServerPassword(string $encrypted): string

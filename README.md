@@ -6,10 +6,10 @@ Lumio 官方 WHMCS 自动开通模块，供代理商在自己的 WHMCS 中销售
 
 ## 下载与安装
 
-从 [v1.1.7 Release](https://github.com/lumiosh/lumio-whmcs-module/releases/tag/v1.1.7) 下载 `lumio-whmcs-module-v1.1.7.zip`，上传到 WHMCS 安装根目录，然后执行：
+从 [v1.1.8 Release](https://github.com/lumiosh/lumio-whmcs-module/releases/tag/v1.1.8) 下载 `lumio-whmcs-module-v1.1.8.zip`，上传到 WHMCS 安装根目录，然后执行：
 
 ```bash
-unzip -o lumio-whmcs-module-v1.1.7.zip
+unzip -o lumio-whmcs-module-v1.1.8.zip
 ```
 
 解压后模块位于 `modules/servers/lumio/`。
@@ -37,7 +37,7 @@ unzip -o lumio-whmcs-module-v1.1.7.zip
 - [中文使用教程](docs/QUICKSTART.zh-CN.md) / [English Quick Start](docs/QUICKSTART.en.md)
 - [中文排错指南](docs/TROUBLESHOOTING.zh-CN.md) / [English Troubleshooting](docs/TROUBLESHOOTING.en.md)
 - [模块说明](modules/servers/lumio/README.md)
-- [v1.1.7 更新说明](modules/servers/lumio/CHANGELOG.md)
+- [v1.1.8 更新说明](modules/servers/lumio/CHANGELOG.md)
 
 ## 许可证
 

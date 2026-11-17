@@ -137,6 +137,19 @@
             : 'Availability: Unavailable';
     }
 
+    var policyLabel = 'Immediate Termination Policy';
+
+    function terminationPolicyAccepted(bindings) {
+        var control = bindings[12] ? bindings[12].control : null;
+        if (!control) {
+            return false;
+        }
+        if (String(control.type || '').toLowerCase() === 'checkbox') {
+            return control.checked === true;
+        }
+        return ['on', 'yes', '1', 'true'].indexOf(String(control.value || '').trim().toLowerCase()) !== -1;
+    }
+
     function parseConfiguration(value) {
         if (!value) {
             return {};
@@ -224,6 +237,11 @@
             '.lumio-mapper-cost-name{display:block;color:#6b7b88;font-size:11px}',
             '.lumio-mapper-cost-value{display:block;margin-top:2px;color:#263746;font-weight:600}',
             '.lumio-mapper-hidden-warning{margin-top:10px;color:#a05b16;font-size:12px}',
+            '.lumio-mapper-cost-retail{display:block;margin-top:4px;color:#6b7b88;font-size:11px}',
+            '.lumio-mapper-cost-loss{border-color:#e3a3a3;background:#fff5f5}',
+            '.lumio-mapper-cost-loss .lumio-mapper-cost-retail{color:#b03a3a;font-weight:600}',
+            '.lumio-mapper-costs-note{grid-column:1/-1}',
+            '.lumio-mapper-loss-note{color:#b03a3a}',
             '@media(max-width:768px){.lumio-mapper-head{display:block}.lumio-mapper-refresh{margin-top:10px}.lumio-mapper-grid{grid-template-columns:1fr}.lumio-mapper-field-wide{grid-column:auto}.lumio-mapper-costs{grid-template-columns:1fr 1fr}}'
         ].join('');
         document.head.appendChild(style);
@@ -422,14 +440,27 @@
     function selectedAddons(state) {
         var ids = [];
         var total = 0;
+        var recurring = 0;
         state.addonControls.forEach(function (entry) {
             if (entry.addon.required || entry.input.checked) {
                 ids.push(entry.addon.id);
                 total += entry.addon.price_cents;
+                if (entry.addon.billing_type === 'recurring') {
+                    recurring += entry.addon.price_cents;
+                }
             }
         });
         ids.sort(function (left, right) { return left - right; });
-        return { ids: ids, total: total };
+        return { ids: ids, total: total, recurring: recurring };
+    }
+
+    function retailForCycle(state, cycle) {
+        var retail = state.retail;
+        if (!retail || retail.state !== 'ready' || !retail.cycles) {
+            return null;
+        }
+        var price = retail.cycles[cycle];
+        return price && Number.isInteger(price.price_cents) && Number.isInteger(price.setup_fee_cents) ? price : null;
     }
 
     function validateAndPreview(state, writeRaw) {
@@ -441,11 +472,13 @@
         var addons = selectedAddons(state);
         var invalid = selection.missing.length > 0 || state.mappingWarnings.length > 0 || state.selectedProduct.prices.length === 0;
         var totals = {};
+        var renewals = {};
         Object.keys(cycleFields).forEach(function (cycle) {
             var price = priceForCycle(state.selectedProduct, cycle);
             if (!price) {
                 return;
             }
+            renewals[cycle] = price.price_cents + selection.delta + addons.recurring;
             var total = price.price_cents + price.setup_fee_cents + selection.delta + addons.total;
             if (!Number.isInteger(total) || total < 0 || total > 999999999) {
                 invalid = true;
@@ -455,6 +488,7 @@
         });
 
         clear(state.costs);
+        var losses = [];
         Object.keys(cycleFields).forEach(function (cycle) {
             if (typeof totals[cycle] !== 'number') {
                 return;
@@ -462,12 +496,31 @@
             var cost = element('div', 'lumio-mapper-cost');
             cost.appendChild(element('span', 'lumio-mapper-cost-name', cycleLabels[cycle]));
             cost.appendChild(element('span', 'lumio-mapper-cost-value', formatUsd(totals[cycle])));
+            var retail = retailForCycle(state, cycle);
+            if (retail) {
+                var loss = retail.price_cents + retail.setup_fee_cents < totals[cycle]
+                    || retail.price_cents < renewals[cycle];
+                if (loss) {
+                    cost.className += ' lumio-mapper-cost-loss';
+                    losses.push(cycleLabels[cycle]);
+                }
+                cost.appendChild(element('span', 'lumio-mapper-cost-retail', 'Your price: ' + formatUsd(retail.price_cents)
+                    + (retail.setup_fee_cents ? ' + ' + formatUsd(retail.setup_fee_cents) + ' setup' : '')));
+            }
             state.costs.appendChild(cost);
         });
         if (!state.costs.firstChild) {
-            state.costs.appendChild(element('div', 'lumio-mapper-note', 'This product has no supported WHMCS billing-cycle price.'));
+            state.costs.appendChild(element('div', 'lumio-mapper-note lumio-mapper-costs-note', 'This product has no supported WHMCS billing-cycle price.'));
+        } else if (losses.length) {
+            state.costs.appendChild(element('div', 'lumio-mapper-note lumio-mapper-costs-note lumio-mapper-loss-note',
+                'Your saved USD price is below the Lumio cost for: ' + losses.join(', ')
+                + '. Orders on these billing cycles would lose money. Saving is still allowed.'));
+        } else if (state.retail && state.retail.state === 'no_usd') {
+            state.costs.appendChild(element('div', 'lumio-mapper-note lumio-mapper-costs-note',
+                'Add a USD currency in WHMCS to compare your prices with the Lumio cost.'));
         }
 
+        var policyMissing = !terminationPolicyAccepted(state.bindings);
         clear(state.validation);
         if (selection.missing.length) {
             state.validation.appendChild(createStatus('warning', 'Select all required options: ' + selection.missing.join(', ') + '.'));
@@ -475,10 +528,13 @@
             state.validation.appendChild(createStatus('warning', 'The saved mapping contains unavailable items. Update the selections before saving.'));
         } else if (invalid) {
             state.validation.appendChild(createStatus('error', 'The selected product prices cannot produce valid cost caps.'));
+        } else if (policyMissing) {
+            state.validation.appendChild(createStatus('warning', 'Tick “' + policyLabel + '” below. Until it is ticked, paid orders for this product cannot be provisioned.'));
         } else {
             state.validation.appendChild(createStatus('ready', 'The mapping is complete. Click “Save Changes” at the bottom of the page to apply it.'));
         }
         state.invalid = invalid;
+        state.policyMissing = policyMissing;
 
         if (!writeRaw) {
             return;
@@ -514,16 +570,21 @@
             validateAndPreview(currentState, false);
             if (!currentState.invalid) {
                 validateAndPreview(currentState, true);
-                return;
             }
-            // Preserve an unavailable but unchanged mapping while saving unrelated
-            // fields such as Hidden, Retired, description, or retail price.
-            if (!currentState.dirty) {
+            // Preserve an unavailable or incomplete but unchanged mapping while saving
+            // unrelated fields such as Hidden, Retired, description, or retail price.
+            // Toggling the policy alone never counts as editing the mapping.
+            var blockMapping = currentState.invalid && currentState.dirty;
+            var blockPolicy = !currentState.invalid && currentState.policyMissing
+                && (currentState.dirty || currentState.policyTouched);
+            if (!blockMapping && !blockPolicy) {
                 return;
             }
             event.preventDefault();
             currentState.panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
-            window.alert('Complete the Lumio product mapping before saving.');
+            window.alert(currentState.invalid
+                ? 'Complete the Lumio product mapping before saving.'
+                : 'Tick “' + policyLabel + '” before saving the Lumio product mapping.');
         }, true);
     }
 
@@ -558,6 +619,7 @@
             panel: panel,
             bindings: bindings,
             products: bootstrap.products,
+            retail: bootstrap.retail || null,
             productSelect: productSelect,
             dynamic: dynamic,
             selectedProduct: null,
@@ -567,9 +629,21 @@
             validation: null,
             mappingWarnings: [],
             dirty: false,
+            policyTouched: false,
             invalid: false
         };
         currentState = state;
+        var policyControl = bindings[12].control;
+        if (policyControl.getAttribute('data-lumio-policy-watch') !== '1') {
+            policyControl.setAttribute('data-lumio-policy-watch', '1');
+            policyControl.addEventListener('change', function () {
+                if (!currentState || currentState.bindings[12].control !== policyControl) {
+                    return;
+                }
+                currentState.policyTouched = true;
+                validateAndPreview(currentState, false);
+            });
+        }
         setRawRowsVisible(bindings, false);
         renderProductControls(
             state,

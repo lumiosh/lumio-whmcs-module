@@ -1,4 +1,4 @@
-# Lumio WHMCS v1.1.7 排错指南
+# Lumio WHMCS v1.1.8 排错指南
 
 [简体中文](TROUBLESHOOTING.zh-CN.md) | [English](TROUBLESHOOTING.en.md)
 

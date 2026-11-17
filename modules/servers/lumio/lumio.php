@@ -100,13 +100,34 @@ function lumio_admin_catalog_bootstrap_markup(): string
             : 0);
     try {
         $loader = new AdminCatalogBootstrap();
-        $markup = $loader->markup($loader->load($serverGroupId));
+        $markup = $loader->markup($loader->load($serverGroupId, lumio_admin_product_id()));
     } catch (\Throwable) {
         $markup = '<script type="application/json" class="lumio-catalog-bootstrap">'
             . '{"state":"error","message":"The Lumio product catalog is temporarily unavailable. Please try again.","request_id":null,"products":[]}'
             . '</script>';
     }
     return $markup;
+}
+
+/** The product being edited, from the module-settings request or the edit page it was sent from. */
+function lumio_admin_product_id(): int
+{
+    $candidates = [$_POST['id'] ?? null, $_POST['pid'] ?? null, $_GET['id'] ?? null];
+    $referer = $_SERVER['HTTP_REFERER'] ?? null;
+    if (is_string($referer)
+        && strtolower(basename((string) parse_url($referer, PHP_URL_PATH))) === 'configproducts.php') {
+        parse_str((string) parse_url($referer, PHP_URL_QUERY), $query);
+        $candidates[] = $query['id'] ?? null;
+    }
+    foreach ($candidates as $candidate) {
+        if (is_string($candidate) && preg_match('/^[1-9][0-9]{0,9}$/D', $candidate) === 1) {
+            return (int) $candidate;
+        }
+        if (is_int($candidate) && $candidate > 0) {
+            return $candidate;
+        }
+    }
+    return 0;
 }
 
 /** @param array<string, mixed> $params @return array{success: bool, error: string} */
@@ -265,6 +286,7 @@ function lumio_client_connection_variables(array $params, array $state): array
         'lumioConnectionNotes' => '',
         'lumioSshPort' => '',
         'lumioVncPort' => '',
+        'lumioSshCommand' => '',
         'lumioHasConnectionInfo' => false,
     ];
     $deliveryState = (string) ($state['delivery_state'] ?? '');
@@ -308,6 +330,7 @@ function lumio_client_connection_variables(array $params, array $state): array
         'lumioConnectionNotes' => $connectionNotes,
         'lumioSshPort' => $ports['ssh'],
         'lumioVncPort' => $ports['vnc'],
+        'lumioSshCommand' => lumio_client_ssh_command($username, $dedicatedIp !== '' ? $dedicatedIp : $hostname, $ports['ssh']),
         'lumioHasConnectionInfo' => $dedicatedIp !== ''
             || $hostname !== ''
             || $username !== ''
@@ -316,6 +339,20 @@ function lumio_client_connection_variables(array $params, array $state): array
             || $ports['ssh'] !== ''
             || $ports['vnc'] !== '',
     ];
+}
+
+/** A copyable command such as "ssh user@203.0.113.10 -p 2222"; empty when it cannot be built safely. */
+function lumio_client_ssh_command(string $username, string $address, string $port): string
+{
+    if (preg_match('/^[A-Za-z0-9._-]{1,64}$/D', $username) !== 1
+        || preg_match('/^[A-Za-z0-9.:-]{1,253}$/D', $address) !== 1) {
+        return '';
+    }
+    $command = 'ssh ' . $username . '@' . $address;
+    if (preg_match('/^[0-9]{1,5}$/D', $port) === 1 && $port !== '22' && (int) $port >= 1 && (int) $port <= 65535) {
+        $command .= ' -p ' . $port;
+    }
+    return $command;
 }
 
 /** @return array{ssh: string, vnc: string, remaining: string} */

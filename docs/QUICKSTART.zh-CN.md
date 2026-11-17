@@ -1,13 +1,13 @@
-# Lumio WHMCS v1.1.7 使用教程
+# Lumio WHMCS v1.1.8 使用教程
 
 [简体中文](QUICKSTART.zh-CN.md) | [English](QUICKSTART.en.md)
 
 ## 1. 安装模块
 
-从 [v1.1.7 Release](https://github.com/lumiosh/lumio-whmcs-module/releases/tag/v1.1.7) 下载 `lumio-whmcs-module-v1.1.7.zip`，上传到 WHMCS 安装根目录，然后执行：
+从 [v1.1.8 Release](https://github.com/lumiosh/lumio-whmcs-module/releases/tag/v1.1.8) 下载 `lumio-whmcs-module-v1.1.8.zip`，上传到 WHMCS 安装根目录，然后执行：
 
 ```bash
-unzip -o lumio-whmcs-module-v1.1.7.zip
+unzip -o lumio-whmcs-module-v1.1.8.zip
 ```
 
 模块会解压到 `modules/servers/lumio/`。

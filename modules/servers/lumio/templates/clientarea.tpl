@@ -19,18 +19,18 @@
             <dl class="row mb-0 lumio-connection-list">
                 {if $lumioDedicatedIp}
                     <dt class="col-sm-4">{$lumioLang.serverAddress|escape:'html'}</dt>
-                    <dd class="col-sm-8"><code>{$lumioDedicatedIp|escape:'html'}</code></dd>
+                    <dd class="col-sm-8"><code data-copy-source>{$lumioDedicatedIp|escape:'html'}</code><button type="button" class="btn btn-sm btn-default btn-outline-secondary ml-2 lumio-copy-btn" data-copy-button>{$lumioLang.copy|escape:'html'}</button></dd>
                 {elseif $lumioHostname}
                     <dt class="col-sm-4">{$lumioLang.serverAddress|escape:'html'}</dt>
-                    <dd class="col-sm-8"><code>{$lumioHostname|escape:'html'}</code></dd>
+                    <dd class="col-sm-8"><code data-copy-source>{$lumioHostname|escape:'html'}</code><button type="button" class="btn btn-sm btn-default btn-outline-secondary ml-2 lumio-copy-btn" data-copy-button>{$lumioLang.copy|escape:'html'}</button></dd>
                 {/if}
                 {if $lumioHostname && $lumioHostname != $lumioDedicatedIp}
                     <dt class="col-sm-4">{$lumioLang.hostname|escape:'html'}</dt>
-                    <dd class="col-sm-8"><code>{$lumioHostname|escape:'html'}</code></dd>
+                    <dd class="col-sm-8"><code data-copy-source>{$lumioHostname|escape:'html'}</code><button type="button" class="btn btn-sm btn-default btn-outline-secondary ml-2 lumio-copy-btn" data-copy-button>{$lumioLang.copy|escape:'html'}</button></dd>
                 {/if}
                 {if $lumioUsername}
                     <dt class="col-sm-4">{$lumioLang.username|escape:'html'}</dt>
-                    <dd class="col-sm-8"><code>{$lumioUsername|escape:'html'}</code></dd>
+                    <dd class="col-sm-8"><code data-copy-source>{$lumioUsername|escape:'html'}</code><button type="button" class="btn btn-sm btn-default btn-outline-secondary ml-2 lumio-copy-btn" data-copy-button>{$lumioLang.copy|escape:'html'}</button></dd>
                 {/if}
                 {if $lumioConnectionNotes}
                     <dt class="col-sm-4">{$lumioLang.connectionNotes|escape:'html'}</dt>
@@ -52,6 +52,10 @@
                         <button type="button" class="btn btn-sm btn-default btn-outline-secondary ml-2" data-password-toggle aria-pressed="false">{$lumioLang.show|escape:'html'}</button>
                         <button type="button" class="btn btn-sm btn-default btn-outline-secondary" data-password-copy>{$lumioLang.copy|escape:'html'}</button>
                     </dd>
+                {/if}
+                {if $lumioSshCommand}
+                    <dt class="col-sm-4">{$lumioLang.sshCommand|escape:'html'}</dt>
+                    <dd class="col-sm-8"><code data-copy-source>{$lumioSshCommand|escape:'html'}</code><button type="button" class="btn btn-sm btn-default btn-outline-secondary ml-2 lumio-copy-btn" data-copy-button>{$lumioLang.copy|escape:'html'}</button></dd>
                 {/if}
             </dl>
             <div class="small text-danger mt-2" data-copy-feedback aria-live="polite"></div>
@@ -106,7 +110,8 @@
     .lumio-client-panel .lumio-secret [data-password-mask],
     .lumio-client-panel .lumio-secret [data-password-value] { display: inline-block; min-width: 112px; }
     .lumio-client-panel .lumio-secret [hidden] { display: none !important; }
-    .lumio-client-panel .lumio-secret .btn {
+    .lumio-client-panel .lumio-secret .btn,
+    .lumio-client-panel .lumio-copy-btn {
         border-color: #cbd5e1;
         background: #ffffff;
         color: #334155;
@@ -130,11 +135,12 @@
     }
     @media (max-width: 575.98px) {
         .lumio-client-panel .lumio-client-header { flex-direction: column; gap: 8px; }
-        .lumio-client-panel .lumio-secret .btn { margin-top: 6px; }
+        .lumio-client-panel .lumio-secret .btn,
+        .lumio-client-panel .lumio-copy-btn { margin-top: 6px; }
     }
 </style>
 
-{if $lumioPassword}
+{if $lumioHasConnectionInfo}
     <script>
     {literal}
     (function () {
@@ -147,6 +153,49 @@
             panel.dataset.lumioReady = "1";
 
             var feedback = panel.querySelector("[data-copy-feedback]");
+            function copyText(value, button) {
+                var copied = navigator.clipboard && window.isSecureContext
+                    ? navigator.clipboard.writeText(value)
+                    : new Promise(function (resolve, reject) {
+                        var field = document.createElement("textarea");
+                        field.value = value;
+                        field.style.position = "fixed";
+                        field.style.opacity = "0";
+                        document.body.appendChild(field);
+                        field.select();
+                        try {
+                            document.execCommand("copy") ? resolve() : reject();
+                        } catch (error) {
+                            reject(error);
+                        }
+                        document.body.removeChild(field);
+                    });
+
+                copied.then(function () {
+                    if (feedback) {
+                        feedback.textContent = "";
+                    }
+                    button.textContent = panel.dataset.labelCopied;
+                    window.setTimeout(function () {
+                        button.textContent = panel.dataset.labelCopy;
+                    }, 1600);
+                }).catch(function () {
+                    if (feedback) {
+                        feedback.textContent = panel.dataset.messageCopyFailed;
+                    }
+                });
+            }
+
+            panel.querySelectorAll("[data-copy-button]").forEach(function (button) {
+                var source = button.parentNode ? button.parentNode.querySelector("[data-copy-source]") : null;
+                if (!source) {
+                    return;
+                }
+                button.addEventListener("click", function () {
+                    copyText(source.textContent || "", button);
+                });
+            });
+
             panel.querySelectorAll("[data-secret]").forEach(function (container) {
                 var mask = container.querySelector("[data-password-mask]");
                 var password = container.querySelector("[data-password-value]");
@@ -165,34 +214,7 @@
                 });
 
                 copy.addEventListener("click", function () {
-                    var value = password.textContent || "";
-                    var copied = navigator.clipboard && window.isSecureContext
-                        ? navigator.clipboard.writeText(value)
-                        : new Promise(function (resolve, reject) {
-                            var field = document.createElement("textarea");
-                            field.value = value;
-                            field.style.position = "fixed";
-                            field.style.opacity = "0";
-                            document.body.appendChild(field);
-                            field.select();
-                            try {
-                                document.execCommand("copy") ? resolve() : reject();
-                            } catch (error) {
-                                reject(error);
-                            }
-                            document.body.removeChild(field);
-                        });
-
-                    copied.then(function () {
-                        copy.textContent = panel.dataset.labelCopied;
-                        window.setTimeout(function () {
-                            copy.textContent = panel.dataset.labelCopy;
-                        }, 1600);
-                    }).catch(function () {
-                        if (feedback) {
-                            feedback.textContent = panel.dataset.messageCopyFailed;
-                        }
-                    });
+                    copyText(password.textContent || "", copy);
                 });
             });
         });
